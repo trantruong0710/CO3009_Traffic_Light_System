@@ -1,0 +1,20 @@
+# STM32CubeIDE workspace files
+.metadata/
+
+# Build output folders
+Debug/
+Release/
+
+# Compiler and linker outputs
+*.o
+*.d
+*.elf
+*.map
+*.su
+*.list
+*.bin
+*.hex
+
+# Operating system files
+.DS_Store
+Thumbs.db
