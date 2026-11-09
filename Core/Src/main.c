@@ -22,7 +22,8 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "i2c_scanner.h"
+#include "dht20.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -32,6 +33,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define ENABLE_I2C_SCAN 1
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -97,7 +99,10 @@ int main(void)
   MX_I2C1_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
-
+#if ENABLE_I2C_SCAN
+  dht20_init();
+  i2c_scanner_init(&hi2c1);
+#endif
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -107,6 +112,9 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+#if ENABLE_I2C_SCAN
+    i2c_scanner_service();
+#endif
   }
   /* USER CODE END 3 */
 }
