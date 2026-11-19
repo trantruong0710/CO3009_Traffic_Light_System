@@ -4,12 +4,21 @@
 volatile i2c_scan_result_t g_i2c_scan;
 static I2C_HandleTypeDef *scan_bus = NULL;			//scan_bus nhớ địa chỉ handle, không sao chép toàn handle
 
-
+#define I2C_SCAN_ADDR_MIN (0x08U)
+#define I2C_SCAN_ADDR_MAX (0x77U)
+#define I2C_SCAN_TIMEOUT_MS (2U)
 
 void i2c_scanner_init(I2C_HandleTypeDef *bus){
-	const i2c_scan_result_t init_res = {0};			//count/error/next bằng 0, complete=false, mảng toàn 0
-	g_i2c_scan = init_res;
-	g_i2c_scan.next_address = 0x08U;
+	uint16_t i;
+
+	for(i = 0; i < 128; i++){
+		g_i2c_scan.detected[i] = 0U;
+	}
+
+	g_i2c_scan.device_count = 0U;
+	g_i2c_scan.next_address = I2C_SCAN_ADDR_MIN;
+	g_i2c_scan.bus_error_count = 0U;
+	g_i2c_scan.complete = (bus == NULL);
 	scan_bus = bus;
 }
 
@@ -23,18 +32,18 @@ void i2c_scanner_service(void){
 	}
 
 	address = g_i2c_scan.next_address;
-	status = HAL_I2C_IsDeviceReady(scan_bus, (uint16_t)(address << 1U), 1U, 5U);		//1U: số trial. 5U: tham số timeout
+	status = HAL_I2C_IsDeviceReady(scan_bus, (uint16_t)(address << 1U), 1U, I2C_SCAN_TIMEOUT_MS);		//1U: số trial. 2 ms: tham số timeout
 
 	if(status == HAL_OK){							//đánh dấu địa chỉ ACK và tăng count
 		g_i2c_scan.detected[address] = 1U;
-		g_i2c_scan.device_count++;
+		g_i2c_scan.device_count = (uint8_t)(g_i2c_scan.device_count + 1U);
 
 	}else if(status != HAL_ERROR || HAL_I2C_GetError(scan_bus) != HAL_I2C_ERROR_AF){		//AF là acknowledge failure : địa chỉ không có thiết bị trả lời
 		g_i2c_scan.bus_error_count++;														//Bộ đếm này tăng khi quá trình giao tiếp I2C gặp trục trặc
 
 	}
 
-	if(address == 0x77U){							//Toàn scan cần 0x77−0x08+1=112 lần service
+	if(address >= I2C_SCAN_ADDR_MAX){							//Toàn scan cần 0x77−0x08+1=112 lần service
 		g_i2c_scan.complete = true;
 
 	}else{
