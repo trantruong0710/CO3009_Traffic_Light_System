@@ -10,6 +10,7 @@
 /* Simulated GPIO output latch. */
 static uint16_t gpio_state;
 static unsigned write_count;
+static uint32_t last_bsrr;
 static uint8_t read_code(uint16_t pin_a, uint16_t pin_b);
 
 void traffic_test_bsrr(uint32_t value)
@@ -24,6 +25,7 @@ void traffic_test_bsrr(uint32_t value)
     /* Verify physical outputs after every atomic GPIO write. */
 assert(!(read_code(TL1_A_Pin, TL1_B_Pin) == TL1_GREEN_CODE &&
          read_code(TL2_A_Pin, TL2_B_Pin) == TL2_GREEN_CODE));
+    last_bsrr = value;
     write_count++;
 }
 
@@ -60,6 +62,7 @@ static void reset_test(void)
 {
     gpio_state = 0U;
     write_count = 0U;
+    last_bsrr = 0U;
     global_init();
     traffic_init();
 }
@@ -220,6 +223,40 @@ static void test_reverse_direct_handoff(void)
         LIGHT_RED, LIGHT_GREEN) ==
         TRAFFIC_HW_NOT_READY);
 }
+/* TEST 10: Each valid pair uses one correct atomic BSRR write. */
+static void test_atomic_bsrr_write(void)
+{
+    reset_test();
+
+    unsigned before = write_count;
+
+    assert(traffic_apply_pair(
+        LIGHT_AMBER, LIGHT_GREEN) == TRAFFIC_OK);
+
+    assert(write_count == before + 1U);
+
+    /* Based on test-only color codes, not verified hardware. */
+    const uint16_t all =
+        TL1_A_Pin | TL1_B_Pin |
+        TL2_A_Pin | TL2_B_Pin;
+
+    const uint16_t expected_set =
+        TL1_B_Pin | TL2_B_Pin;
+
+    const uint16_t expected_reset =
+        all & (uint16_t)~expected_set;
+
+    const uint32_t expected_bsrr =
+        (uint32_t)expected_set |
+        ((uint32_t)expected_reset << 16U);
+
+    assert(last_bsrr == expected_bsrr);
+
+    check(LIGHT_AMBER, LIGHT_GREEN,
+          TL1_AMBER_CODE, TL2_GREEN_CODE);
+
+    assert(g_app_state.fault_flags == 0U);
+}
 
 int main(void)
 {
@@ -232,7 +269,8 @@ int main(void)
     test_null_pointers();
     test_fault_latch();
     test_reverse_direct_handoff();
+    test_atomic_bsrr_write();
 
-    puts("PASS: 9/9 Traffic Driver unit tests");
+    puts("PASS: 10/10 Traffic Driver unit tests");
     return 0;
 }
