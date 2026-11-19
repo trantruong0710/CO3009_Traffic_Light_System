@@ -26,6 +26,7 @@
 static button_event_t actions[ACTION_CAPACITY];
 static uint8_t action_count;
 static bool safety_latched;
+static traffic_phase_t last_lcd_phase;
 
 static app_mode_t next_mode(app_mode_t current)
 {
@@ -145,6 +146,7 @@ static void enter_mode(app_mode_t mode)
 
     /* This updates the LCD view model only; no I2C transactions here. */
     lcd_set_view(mode, PHASE_SAFE, FIELD_R1, false);
+    last_lcd_phase = PHASE_SAFE;
 }
 
 void mode_manager_init(void)
@@ -182,6 +184,12 @@ void mode_manager_run(void)
         if (is_action_for_mode(mode, event)) {
             queue_action(mode, event);
         }
+    }
+
+    if ((mode == MODE_AUTO || mode == MODE_MANUAL) &&
+        g_app_state.phase != last_lcd_phase) {
+        lcd_set_view(mode, g_app_state.phase, FIELD_R1, false);
+        last_lcd_phase = g_app_state.phase;
     }
 }
 

@@ -21,10 +21,26 @@
 #include "main.h"
 
 /* Private includes ----------------------------------------------------------*/
+
 /* USER CODE BEGIN Includes */
-#include "i2c_scanner.h"
+#include <stdbool.h>
+#include <stddef.h>
+
+#include "global.h"
+#include "config.h"
+#include "scheduler.h"
+#include "software_timer.h"
+#include "button.h"
+#include "traffic_light.h"
+#include "mode_manager.h"
+#include "fsm_automatic.h"
+#include "fsm_manual.h"
+#include "fsm_tuning.h"
 #include "dht20.h"
+#include "lcd.h"
+#include "i2c_scanner.h"
 /* USER CODE END Includes */
+
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
@@ -33,7 +49,7 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define ENABLE_I2C_SCAN 1
+#define FAULT_CORE_TASK_MISSING (1UL << 2)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -63,9 +79,59 @@ static void MX_TIM2_Init(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
+
 /* USER CODE BEGIN 0 */
 
+typedef struct {
+    void (*callback)(void);
+    uint32_t delay;
+    uint32_t period;
+} core_task_setup_t;
+
+static const core_task_setup_t core_tasks[] = {
+    {swtimer_tick_10ms,  1U,  1U},
+    {button_scan_10ms,   1U,  1U},
+    {mode_manager_run,   1U,  1U},
+    {fsm_automatic_run,  1U,  2U},
+    {fsm_manual_run,     1U,  2U},
+    {fsm_tuning_run,     1U,  2U},
+    {dht20_service,     10U, 10U},
+    {lcd_service,       20U, 20U}
+};
+
+static bool register_core_tasks(void)
+{
+    const size_t count =
+        sizeof(core_tasks) / sizeof(core_tasks[0]);
+
+    for (size_t i = 0U; i < count; ++i) {
+        uint32_t id = SCH_Add_Task(
+            core_tasks[i].callback,
+            core_tasks[i].delay,
+            core_tasks[i].period
+        );
+
+        if (id == SCH_INVALID_TASK_ID) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static void app_startup_fail_safe(void)
+{
+    global_raise_fault(FAULT_CORE_TASK_MISSING);
+    traffic_force_all_red();
+    g_app_state.phase = PHASE_SAFE;
+
+    for (;;) {
+        /* Stop startup after a fatal initialization error. */
+    }
+}
+
 /* USER CODE END 0 */
+
 
 /**
   * @brief  The application entry point.
@@ -99,10 +165,29 @@ int main(void)
   MX_I2C1_Init();
   MX_TIM2_Init();
   /* USER CODE BEGIN 2 */
-#if ENABLE_I2C_SCAN
+  global_init();
+  config_init_defaults();
+
+  SCH_Init();
+  swtimer_init();
+  button_init();
+
+  /* Disable the I2C scanner during normal operation. */
+  i2c_scanner_init(NULL);
+
   dht20_init();
-  i2c_scanner_init(&hi2c1);
-#endif
+  lcd_init();
+  traffic_init();
+
+  mode_manager_init();
+
+  if (!register_core_tasks()) {
+    app_startup_fail_safe();
+  }
+
+  if (HAL_TIM_Base_Start_IT(&htim2) != HAL_OK) {
+    app_startup_fail_safe();
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -112,9 +197,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-#if ENABLE_I2C_SCAN
-    i2c_scanner_service();
-#endif
+    SCH_Dispatch_Tasks();
   }
   /* USER CODE END 3 */
 }
@@ -334,6 +417,12 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance == TIM2) {
+        SCH_Update();
+    }
+}
 
 /* USER CODE END 4 */
 

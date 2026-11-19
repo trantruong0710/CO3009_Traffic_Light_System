@@ -346,6 +346,52 @@ static void test_diagnostic_fault_does_not_stop_mode(void)
     assert(all_red_calls == 2U);
 }
 
+
+static void test_lcd_phase_synchronization(void)
+{
+    setup();
+
+    /* AUTO: update LCD when phase changes. */
+    unsigned calls = lcd_view_calls;
+
+    g_app_state.phase = PHASE_P0;
+    mode_manager_run();
+
+    assert(lcd_view_calls == calls + 1U);
+    assert(lcd_mode == MODE_AUTO);
+    assert(lcd_phase == PHASE_P0);
+
+    /* No redundant update for an unchanged phase. */
+    calls = lcd_view_calls;
+    mode_manager_run();
+    assert(lcd_view_calls == calls);
+
+    g_app_state.phase = PHASE_P1;
+    mode_manager_run();
+    assert(lcd_phase == PHASE_P1);
+
+    /* MANUAL: synchronize the new phase. */
+    press_mode();
+    assert(lcd_mode == MODE_MANUAL);
+    assert(lcd_phase == PHASE_SAFE);
+
+    g_app_state.phase = PHASE_P3;
+    mode_manager_run();
+    assert(lcd_mode == MODE_MANUAL);
+    assert(lcd_phase == PHASE_P3);
+
+    /* TUNING: must not overwrite the tuning display. */
+    press_mode();
+    assert(lcd_mode == MODE_TUNING);
+
+    calls = lcd_view_calls;
+    g_app_state.phase = PHASE_P4;
+    mode_manager_run();
+
+    assert(lcd_view_calls == calls);
+    assert(lcd_mode == MODE_TUNING);
+}
+
 int main(void)
 {
     test_mode_cycle_and_lcd();
@@ -358,7 +404,8 @@ int main(void)
     test_traffic_safety_fault_latches();
     test_missing_core_task_fault();
     test_diagnostic_fault_does_not_stop_mode();
+    test_lcd_phase_synchronization();
 
-    puts("PASS: 10 mode manager test groups");
+    puts("PASS: 11 mode manager test groups");
     return 0;
 }
