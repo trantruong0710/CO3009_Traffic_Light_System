@@ -2,9 +2,9 @@
 #include "scheduler.h"
 
 typedef struct {
-    uint32_t remaining;
-    uint32_t last_tick;
-    bool expired;
+    bool running;
+    uint32_t due_tick;
+    bool expired_latch;
 } soft_timer_t;
 
 static soft_timer_t timers[TMR_COUNT];
@@ -12,6 +12,12 @@ static soft_timer_t timers[TMR_COUNT];
 static bool timer_id_valid(soft_timer_id_t id)
 {
     return (uint32_t)id < (uint32_t)TMR_COUNT;
+}
+
+/* Valid for deadlines no more than INT32_MAX ticks from now. */
+static bool tick_reached(uint32_t now, uint32_t deadline)
+{
+    return (int32_t)(now - deadline) >= 0;
 }
 
 void swtimer_init(void)
@@ -23,14 +29,15 @@ void swtimer_init(void)
 
 bool swtimer_start(soft_timer_id_t id, uint32_t ticks)
 {
-    if (!timer_id_valid(id) || ticks == 0U) {
+    if (!timer_id_valid(id) || ticks == 0U ||
+        ticks > (uint32_t)INT32_MAX) {
         return false;
     }
 
     timers[id] = (soft_timer_t){
-        .remaining = ticks,
-        .last_tick = SCH_GetTick(),
-        .expired = false
+        .running = true,
+        .due_tick = SCH_GetTick() + ticks,
+        .expired_latch = false
     };
     return true;
 }
@@ -49,18 +56,9 @@ void swtimer_tick_10ms(void)
     for (uint32_t i = 0U; i < (uint32_t)TMR_COUNT; ++i) {
         soft_timer_t *timer = &timers[i];
 
-        if (timer->remaining == 0U) {
-            continue;
-        }
-
-        uint32_t elapsed = now - timer->last_tick;
-        timer->last_tick = now;
-
-        if (elapsed >= timer->remaining) {
-            timer->remaining = 0U;
-            timer->expired = true;
-        } else {
-            timer->remaining -= elapsed;
+        if (timer->running && tick_reached(now, timer->due_tick)) {
+            timer->running = false;
+            timer->expired_latch = true;
         }
     }
 }
@@ -71,16 +69,21 @@ bool swtimer_expired(soft_timer_id_t id)
         return false;
     }
 
-    bool expired = timers[id].expired;
-    timers[id].expired = false;
-    return expired;
+    bool result = timers[id].expired_latch;
+    timers[id].expired_latch = false;
+    return result;
 }
 
 uint32_t swtimer_remaining(soft_timer_id_t id)
 {
-    if (!timer_id_valid(id)) {
+    if (!timer_id_valid(id) || !timers[id].running) {
         return 0U;
     }
 
-    return timers[id].remaining;
+    uint32_t now = SCH_GetTick();
+    if (tick_reached(now, timers[id].due_tick)) {
+        return 0U;
+    }
+
+    return timers[id].due_tick - now;
 }

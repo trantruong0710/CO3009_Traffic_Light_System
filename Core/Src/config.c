@@ -71,7 +71,11 @@ void config_begin_edit(void)
 
 bool config_adjust_staged(tuning_field_t field, int8_t delta_seconds)
 {
-    traffic_config_t *cfg = &g_app_state.staged_config;
+    if (delta_seconds != 1 && delta_seconds != -1) {
+        return false;
+    }
+
+    traffic_config_t trial = g_app_state.staged_config;
     road_t road;
     bool adjust_amber = false;
 
@@ -101,21 +105,33 @@ bool config_adjust_staged(tuning_field_t field, int8_t delta_seconds)
     }
 
     if (adjust_amber) {
-        int32_t next = (int32_t)cfg->amber_s[road] + delta_seconds;
-        if (!amber_valid(next)) {
+        road_t opposite = (road == ROAD_1) ? ROAD_2 : ROAD_1;
+
+        int32_t old_red = config_get_red_s(&trial, opposite);
+        int32_t next_amber = (int32_t)trial.amber_s[road] + delta_seconds;
+        int32_t next_green = old_red - next_amber - 2 * (int32_t)CLEARANCE_S;
+
+        if (!amber_valid(next_amber) || !green_valid(next_green)) {
             return false;
         }
 
-        cfg->amber_s[road] = (uint8_t)next;
+        trial.amber_s[road] = (uint8_t)next_amber;
+        trial.green_s[road] = (uint16_t)next_green;
     } else {
-        int32_t next = (int32_t)cfg->green_s[road] + delta_seconds;
-        if (!green_valid(next)) {
+        int32_t next_green = (int32_t)trial.green_s[road] + delta_seconds;
+
+        if (!green_valid(next_green)) {
             return false;
         }
 
-        cfg->green_s[road] = (uint16_t)next;
+        trial.green_s[road] = (uint16_t)next_green;
     }
 
+    if (!config_validate(&trial)) {
+        return false;
+    }
+
+    g_app_state.staged_config = trial;
     return true;
 }
 

@@ -1,194 +1,271 @@
 #include "scheduler.h"
 
+#include <stdbool.h>
 #include <stddef.h>
 
-#define NO_SLOT UINT8_MAX
+#if defined(__arm__) || defined(__thumb__)
+#include "stm32f1xx.h"
+#endif
 
-typedef enum {
-    SLOT_FREE = 0,
-    SLOT_WAITING,
-    SLOT_RUNNING,
-    SLOT_CANCELLED
-} slot_state_t;
+/* Fixed-array delta queue, sorted by absolute DueTick. */
+static sTask tasks[SCH_MAX_TASKS];
+static uint8_t task_count;
+static volatile uint32_t sch_tick_epoch;
+static uint32_t next_task_id;
+static uint32_t running_task_id;
+static bool cancel_running_reinsert;
 
-typedef struct {
-    sTask task;
-    uint8_t next;
-    slot_state_t state;
-} task_slot_t;
-
-static task_slot_t slots[SCH_MAX_TASKS];
-static uint8_t head = NO_SLOT;
-static uint32_t next_task_id = 1U;
-static volatile uint32_t current_tick;
-
-/*
- * Tick comparisons assume the two times are separated by no more
- * than INT32_MAX ticks in the relevant direction.
- */
-static int tick_reached(uint32_t now, uint32_t due)
+/* Preserve the caller's interrupt mask on Cortex-M3. */
+static uint32_t irq_save(void)
 {
-    return (now - due) <= (uint32_t)INT32_MAX;
+#if defined(__arm__) || defined(__thumb__)
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    return primask;
+#else
+    /* Host unit tests are single-threaded; no real interrupt can preempt. */
+    return 0U;
+#endif
 }
 
-static int id_in_use(uint32_t id)
+static void irq_restore(uint32_t saved)
 {
-    for (uint8_t i = 0U; i < SCH_MAX_TASKS; ++i) {
-        if (slots[i].state != SLOT_FREE && slots[i].task.TaskID == id) {
-            return 1;
+#if defined(__arm__) || defined(__thumb__)
+    __set_PRIMASK(saved);
+#else
+    (void)saved;
+#endif
+}
+
+/* Valid when no deadline is more than INT32_MAX ticks from 'now'. */
+static bool due(uint32_t now, uint32_t deadline)
+{
+    return (int32_t)(now - deadline) >= 0;
+}
+
+/* Stable ascending order, including deadlines across uint32 rollover. */
+static bool before_or_equal(uint32_t a, uint32_t b, uint32_t now)
+{
+    bool a_due = due(now, a);
+    bool b_due = due(now, b);
+
+    if (a_due != b_due) {
+        return a_due;
+    }
+    if (a_due) {
+        return (uint32_t)(now - a) >= (uint32_t)(now - b);
+    }
+    return (uint32_t)(a - now) <= (uint32_t)(b - now);
+}
+
+/* MAIN context only, with IRQ masked: O(n), n <= 16. */
+static void rebase_queue(uint32_t now)
+{
+    for (uint8_t i = 0U; i < task_count; ++i) {
+        if (i == 0U) {
+            tasks[i].Delay = due(now, tasks[i].DueTick)
+                             ? 0U : tasks[i].DueTick - now;
+            tasks[i].RunMe = due(now, tasks[i].DueTick) ? 1U : 0U;
+        } else {
+            tasks[i].Delay = tasks[i].DueTick - tasks[i - 1U].DueTick;
+            tasks[i].RunMe = 0U;
         }
     }
-    return 0;
 }
 
-static uint32_t allocate_task_id(void)
+static bool id_in_use(uint32_t id)
+{
+    if (running_task_id == id) {
+        return true;
+    }
+    for (uint8_t i = 0U; i < task_count; ++i) {
+        if (tasks[i].TaskID == id) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Called with IRQ masked; at most 16 IDs can be occupied. */
+static uint32_t allocate_id(void)
 {
     uint32_t id;
-
     do {
         id = next_task_id++;
     } while (id == SCH_INVALID_TASK_ID || id_in_use(id));
-
     return id;
 }
 
-static int deadline_at_or_before(uint32_t left, uint32_t right, uint32_t now)
+/* Called with IRQ masked; no new TaskID is allocated here. */
+static void insert_task(sTask task, uint32_t now)
 {
-    int left_due = tick_reached(now, left);
-    int right_due = tick_reached(now, right);
+    uint8_t position = 0U;
 
-    if (left_due != right_due) {
-        return left_due;
+    while (position < task_count &&
+           before_or_equal(tasks[position].DueTick, task.DueTick, now)) {
+        ++position;
     }
 
-    if (left_due) {
-        return (now - left) >= (now - right);
+    for (uint8_t i = task_count; i > position; --i) {
+        tasks[i] = tasks[i - 1U];
     }
 
-    return (left - now) <= (right - now);
+    tasks[position] = task;
+    ++task_count;
+    rebase_queue(now);
 }
 
-/* Insert after tasks that already have the same deadline. */
-static void insert_waiting(uint8_t index)
+/* Called with IRQ masked; caller checked the index. */
+static sTask pop_at(uint8_t position, uint32_t now)
 {
-    uint8_t *link = &head;
-    uint32_t due = slots[index].task.DueTick;
-    uint32_t now = SCH_GetTick();
+    sTask removed = tasks[position];
 
-    while (*link != NO_SLOT &&
-           deadline_at_or_before(slots[*link].task.DueTick, due, now)) {
-        link = &slots[*link].next;
+    for (uint8_t i = position; i + 1U < task_count; ++i) {
+        tasks[i] = tasks[i + 1U];
     }
-
-    slots[index].next = *link;
-    slots[index].state = SLOT_WAITING;
-    *link = index;
+    --task_count;
+    rebase_queue(now);
+    return removed;
 }
 
 void SCH_Init(void)
 {
-    for (uint8_t i = 0U; i < SCH_MAX_TASKS; ++i) {
-        slots[i].state = SLOT_FREE;
-    }
-
-    head = NO_SLOT;
+    uint32_t saved = irq_save();
+    task_count = 0U;
+    sch_tick_epoch = 0U;
     next_task_id = 1U;
-    current_tick = 0U;
+    running_task_id = SCH_INVALID_TASK_ID;
+    cancel_running_reinsert = false;
+    irq_restore(saved);
 }
 
 uint32_t SCH_Add_Task(void (*pFunc)(void), uint32_t delay_ticks,
                       uint32_t period_ticks)
 {
-    if (pFunc == NULL ||
-        delay_ticks > (uint32_t)INT32_MAX ||
+    if (pFunc == NULL || delay_ticks > (uint32_t)INT32_MAX ||
         period_ticks > (uint32_t)INT32_MAX) {
         return SCH_INVALID_TASK_ID;
     }
 
-    for (uint8_t i = 0U; i < SCH_MAX_TASKS; ++i) {
-        if (slots[i].state == SLOT_FREE) {
-            uint32_t id = allocate_task_id();
-
-            slots[i].task = (sTask){
-                .pTask = pFunc,
-                .Period = period_ticks,
-                .TaskID = id,
-                .DueTick = SCH_GetTick() + delay_ticks
-            };
-            insert_waiting(i);
-            return id;
-        }
+    uint32_t saved = irq_save();
+    if ((uint32_t)task_count +
+        (running_task_id != SCH_INVALID_TASK_ID ? 1U : 0U)
+        >= SCH_MAX_TASKS) {
+        irq_restore(saved);
+        return SCH_INVALID_TASK_ID;
     }
 
-    return SCH_INVALID_TASK_ID;
+    uint32_t now = sch_tick_epoch;
+    uint32_t id = allocate_id();
+    sTask task = {
+        .pTask = pFunc,
+        .Delay = delay_ticks,
+        .Period = period_ticks,
+        .RunMe = delay_ticks == 0U ? 1U : 0U,
+        .TaskID = id,
+        .DueTick = now + delay_ticks
+    };
+    insert_task(task, now);
+    irq_restore(saved);
+    return id;
 }
 
+/* Baseline v1.2: return 1 if found, 0 otherwise. */
 uint8_t SCH_Delete_Task(uint32_t taskID)
 {
     if (taskID == SCH_INVALID_TASK_ID) {
+        return 0U;
+    }
+
+    uint32_t saved = irq_save();
+    for (uint8_t i = 0U; i < task_count; ++i) {
+        if (tasks[i].TaskID == taskID) {
+            (void)pop_at(i, sch_tick_epoch);
+            irq_restore(saved);
+            return 1U;
+        }
+    }
+
+    if (running_task_id == taskID) {
+        cancel_running_reinsert = true;
+        irq_restore(saved);
         return 1U;
     }
-
-    uint8_t *link = &head;
-
-    while (*link != NO_SLOT) {
-        uint8_t index = *link;
-
-        if (slots[index].task.TaskID == taskID) {
-            *link = slots[index].next;
-            slots[index].state = SLOT_FREE;
-            return 0U;
-        }
-
-        link = &slots[index].next;
-    }
-
-    for (uint8_t i = 0U; i < SCH_MAX_TASKS; ++i) {
-        if (slots[i].state == SLOT_RUNNING && slots[i].task.TaskID == taskID) {
-            slots[i].state = SLOT_CANCELLED;
-            return 0U;
-        }
-    }
-
-    return 1U;
+    irq_restore(saved);
+    return 0U;
 }
 
-/* TIM2 ISR calls only this function. */
+/* TIM2 ISR: constant time, examines only the head. */
 void SCH_Update(void)
 {
-    ++current_tick;
+    ++sch_tick_epoch;
+    if (task_count != 0U) {
+        if (tasks[0].Delay > 0U) {
+            --tasks[0].Delay;
+        }
+        if (due(sch_tick_epoch, tasks[0].DueTick)) {
+            tasks[0].Delay = 0U;
+            tasks[0].RunMe = 1U;
+        }
+    }
 }
 
 uint32_t SCH_GetTick(void)
 {
-    return current_tick;
+    return sch_tick_epoch;
 }
 
 void SCH_Dispatch_Tasks(void)
 {
     for (uint8_t executed = 0U; executed < SCH_MAX_TASKS; ++executed) {
-        uint8_t index = head;
+        uint32_t saved = irq_save();
+        uint32_t now = sch_tick_epoch;
 
-        if (index == NO_SLOT ||
-            !tick_reached(SCH_GetTick(), slots[index].task.DueTick)) {
+        if (task_count == 0U || !due(now, tasks[0].DueTick)) {
+            irq_restore(saved);
             break;
         }
 
-        task_slot_t *slot = &slots[index];
-        head = slot->next;
-        slot->state = SLOT_RUNNING;
-        slot->task.pTask();
+        sTask task = pop_at(0U, now);
+        running_task_id = task.TaskID;
+        cancel_running_reinsert = false;
+        irq_restore(saved);
 
-        uint32_t period = slot->task.Period;
-        if (slot->state == SLOT_CANCELLED || period == 0U) {
-            slot->state = SLOT_FREE;
-        } else {
-            uint32_t now = SCH_GetTick();
-            uint32_t elapsed = now - slot->task.DueTick;
+        /* Never invoke application callbacks with IRQ disabled. */
+        task.pTask();
 
-            /* Keep the original cadence and skip missed releases. */
-            slot->task.DueTick = now + (period - elapsed % period);
-            insert_waiting(index);
+        saved = irq_save();
+        now = sch_tick_epoch;
+        if (task.Period != 0U && !cancel_running_reinsert) {
+            task.DueTick = now + task.Period;
+            task.Delay = task.Period;
+            task.RunMe = 0U;
+            /* One slot is reserved by running_task_id. */
+            insert_task(task, now);
         }
+        running_task_id = SCH_INVALID_TASK_ID;
+        cancel_running_reinsert = false;
+        irq_restore(saved);
     }
 }
+
+#ifdef SCH_TEST
+/* Test-only hooks. Never compile firmware with -DSCH_TEST. */
+void SCH_Test_SetTick(uint32_t tick)
+{
+    uint32_t saved = irq_save();
+    if (task_count == 0U && running_task_id == SCH_INVALID_TASK_ID) {
+        sch_tick_epoch = tick;
+    }
+    irq_restore(saved);
+}
+
+bool SCH_Test_Peek(uint8_t index, sTask *out)
+{
+    if (out == NULL || index >= task_count) {
+        return false;
+    }
+    *out = tasks[index];
+    return true;
+}
+#endif
