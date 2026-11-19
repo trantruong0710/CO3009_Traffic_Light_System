@@ -10,6 +10,7 @@
 /* Simulated GPIO output latch. */
 static uint16_t gpio_state;
 static unsigned write_count;
+static uint8_t read_code(uint16_t pin_a, uint16_t pin_b);
 
 void traffic_test_bsrr(uint32_t value)
 {
@@ -20,6 +21,9 @@ void traffic_test_bsrr(uint32_t value)
 
     gpio_state |= set;
     gpio_state &= (uint16_t)~reset;
+    /* Verify physical outputs after every atomic GPIO write. */
+assert(!(read_code(TL1_A_Pin, TL1_B_Pin) == TL1_GREEN_CODE &&
+         read_code(TL2_A_Pin, TL2_B_Pin) == TL2_GREEN_CODE));
     write_count++;
 }
 
@@ -191,6 +195,31 @@ static void test_fault_latch(void)
     check(LIGHT_RED, LIGHT_RED,
           TL1_RED_CODE, TL2_RED_CODE);
 }
+/* TEST 9: Reverse GREEN handoff must be rejected. */
+static void test_reverse_direct_handoff(void)
+{
+    reset_test();
+
+    /* Road 1 is GREEN. */
+    assert(traffic_apply_pair(
+        LIGHT_GREEN, LIGHT_RED) == TRAFFIC_OK);
+
+    /* Direct transfer to Road 2 GREEN is unsafe. */
+    assert(traffic_apply_pair(
+        LIGHT_RED, LIGHT_GREEN) ==
+        TRAFFIC_INVALID_PAIR);
+
+    /* Both roads must immediately become RED. */
+    check(LIGHT_RED, LIGHT_RED,
+          TL1_RED_CODE, TL2_RED_CODE);
+
+    /* Safety fault must be recorded and latched. */
+    assert((g_app_state.fault_flags & (1UL << 0)) != 0U);
+
+    assert(traffic_apply_pair(
+        LIGHT_RED, LIGHT_GREEN) ==
+        TRAFFIC_HW_NOT_READY);
+}
 
 int main(void)
 {
@@ -202,7 +231,8 @@ int main(void)
     test_invalid_values();
     test_null_pointers();
     test_fault_latch();
+    test_reverse_direct_handoff();
 
-    puts("PASS: 8/8 Traffic Driver unit tests");
+    puts("PASS: 9/9 Traffic Driver unit tests");
     return 0;
 }

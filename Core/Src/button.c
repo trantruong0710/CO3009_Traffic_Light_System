@@ -1,6 +1,8 @@
 
 #include "button.h"
 #include "main.h"
+#include "scheduler.h"
+#include "global.h"
 
 
 #include <string.h>
@@ -9,6 +11,8 @@
 #define DEBOUNCE_SAMPLES   3U
 #define LONG_PRESS_TICKS   100U
 #define EVENT_CAPACITY     8U
+/* Provisional fault bit; TV1 must confirm before merge. */
+#define TV2_FAULT_BUTTON_QUEUE_FULL (1UL << 1)
 
 /*
  * Hardware verification V-03 is pending.
@@ -29,7 +33,6 @@ typedef struct {
 } button_state_t;
 
 static button_state_t states[BTN_COUNT];
-static uint32_t scan_ticks = 0U;
 
 static GPIO_TypeDef * const ports[BTN_COUNT] = {
     BTN_1_GPIO_Port, BTN_2_GPIO_Port,
@@ -68,32 +71,61 @@ static void push_event(button_id_t id, button_kind_t kind)
 {
     button_event_t e = { id, kind };
 
-    if (event_count == EVENT_CAPACITY) {
-        queue_overflow = true;
-
-        /* Preserve MODE and STOP over auxiliary events. */
-        if (!is_critical_event(e)) {
-            return;
-        }
-
-        uint8_t victim = 0U;
-
-        while (victim < event_count &&
-               is_critical_event(events[victim])) {
-            victim++;
-        }
-
-        if (victim == event_count) {
-            victim = 0U; /* Replace oldest if all critical. */
-        }
-
-        for (uint8_t i = victim;
-             i + 1U < event_count; i++) {
-            events[i] = events[i + 1U];
-        }
-
-        event_count--;
+    if (event_count < EVENT_CAPACITY) {
+        events[event_count++] = e;
+        return;
     }
+
+    queue_overflow = true;
+    global_raise_fault(TV2_FAULT_BUTTON_QUEUE_FULL);
+
+    /* Drop noncritical incoming events when FIFO is full. */
+    if (!is_critical_event(e)) {
+        return;
+    }
+
+    uint8_t victim = EVENT_CAPACITY;
+
+    /* Priority 1: Evict the oldest noncritical event. */
+    for (uint8_t i = 0U; i < event_count; i++) {
+        if (!is_critical_event(events[i])) {
+            victim = i;
+            break;
+        }
+    }
+
+    /*
+     * Priority 2: All queued events are critical.
+     * Evict an older duplicate, preserving the last
+     * MODE and STOP event.
+     */
+    if (victim == EVENT_CAPACITY) {
+        for (uint8_t i = 0U; i < event_count; i++) {
+            for (uint8_t j = i + 1U; j < event_count; j++) {
+                if (events[i].id == events[j].id &&
+                    events[i].kind == events[j].kind) {
+                    victim = i;
+                    break;
+                }
+            }
+
+            if (victim != EVENT_CAPACITY) {
+                break;
+            }
+        }
+    }
+
+    /* No event can be safely replaced. */
+    if (victim == EVENT_CAPACITY) {
+        return;
+    }
+
+    /* Remove selected event while preserving FIFO order. */
+    for (uint8_t i = victim; i + 1U < event_count; i++) {
+        events[i] = events[i + 1U];
+    }
+
+    event_count--;
 
     events[event_count++] = e;
 }
@@ -103,7 +135,6 @@ void button_init(void)
     memset(states, 0, sizeof(states));
     event_count = 0U;
     queue_overflow = false;
-    scan_ticks = 0U;
 }
 
 void button_scan_10ms(void)
@@ -112,7 +143,7 @@ void button_scan_10ms(void)
         return;
     }
 
-    uint32_t now = ++scan_ticks;
+    uint32_t now = SCH_GetTick();
 
     for (uint8_t i = 0U; i < BTN_COUNT; i++) {
         button_state_t *b = &states[i];

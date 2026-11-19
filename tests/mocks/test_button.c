@@ -4,10 +4,18 @@
 
 #include "main.h"
 #include "button.h"
+static uint32_t mock_tick = 0U;
 
 GPIO_TypeDef mock_gpioa = {0};
 GPIO_TypeDef mock_gpiob = {1};
 GPIO_TypeDef mock_gpioc = {2};
+
+static uint32_t mock_fault_flags = 0U;
+
+void global_raise_fault(uint32_t mask)
+{
+    mock_fault_flags |= mask;
+}
 
 static GPIO_PinState levels[4] = {
     GPIO_PIN_SET, GPIO_PIN_SET,
@@ -33,6 +41,7 @@ GPIO_PinState HAL_GPIO_ReadPin(
 static void scan(unsigned ticks)
 {
     while (ticks-- > 0U) {
+        mock_tick++;
         button_scan_10ms();
     }
 }
@@ -54,6 +63,8 @@ static void expect_empty(void)
 
 static void reset_test(void)
 {
+    mock_fault_flags = 0U;
+    mock_tick = 0U;
     for (unsigned i = 0; i < 4; i++) {
         levels[i] = GPIO_PIN_SET;
     }
@@ -61,7 +72,6 @@ static void reset_test(void)
     button_init();
     scan(3);
 }
-
 static void test_short_press(void)
 {
     reset_test();
@@ -217,6 +227,7 @@ static void test_queue_overflow(void)
 
     expect_event(BTN_3, BTN_EVT_DOWN);
     expect_empty();
+    assert((mock_fault_flags & (1UL << 1)) != 0U);
 }
 
 
@@ -373,6 +384,104 @@ static void test_repeated_presses(void)
 
 
 
+uint32_t SCH_GetTick(void)
+{
+    return mock_tick;
+}
+
+
+/* TEST 14: LONG must use real elapsed ticks, not scan count. */
+static void test_delayed_dispatch(void)
+{
+    reset_test();
+
+    levels[1] = GPIO_PIN_RESET;
+    scan(3);
+    expect_event(BTN_2, BTN_EVT_DOWN);
+
+    /* Simulate 100 system ticks without button scanning. */
+    mock_tick += 100U;
+
+    /* One late scan must detect the LONG press. */
+    button_scan_10ms();
+    expect_event(BTN_2, BTN_EVT_LONG);
+    expect_empty();
+
+    /* No repeated LONG or SHORT after release. */
+    levels[1] = GPIO_PIN_SET;
+    scan(3);
+    expect_empty();
+}
+
+
+/* TEST 15: LONG timing survives uint32_t tick wrap-around. */
+static void test_tick_wraparound(void)
+{
+    reset_test();
+
+    mock_tick = UINT32_MAX - 5U;
+
+    levels[0] = GPIO_PIN_RESET;
+    scan(3);
+    expect_event(BTN_1, BTN_EVT_DOWN);
+
+    /* Advance 100 ticks across UINT32_MAX -> 0. */
+    scan(100);
+    expect_event(BTN_1, BTN_EVT_LONG);
+
+    levels[0] = GPIO_PIN_SET;
+    scan(3);
+
+    /* Releasing after LONG must not generate SHORT. */
+    expect_empty();
+}
+/* TEST 16: MODE must survive repeated STOP queue overflow. */
+static void test_mode_priority_on_overflow(void)
+{
+    reset_test();
+
+    /* Fill FIFO with critical STOP events. */
+    for (unsigned i = 0U; i < 9U; i++) {
+        levels[2] = GPIO_PIN_RESET;
+        scan(3);
+        levels[2] = GPIO_PIN_SET;
+        scan(3);
+    }
+
+    /* Add one MODE event. */
+    levels[0] = GPIO_PIN_RESET;
+    scan(3);
+    levels[0] = GPIO_PIN_SET;
+    scan(3);
+
+    /* Generate more STOP events to stress FIFO eviction. */
+    for (unsigned i = 0U; i < 8U; i++) {
+        levels[2] = GPIO_PIN_RESET;
+        scan(3);
+        levels[2] = GPIO_PIN_SET;
+        scan(3);
+    }
+
+    unsigned mode_count = 0U;
+    unsigned stop_count = 0U;
+    button_event_t event;
+
+    while (button_pop_event(&event)) {
+        if (event.id == BTN_1 &&
+            event.kind == BTN_EVT_SHORT) {
+            mode_count++;
+        }
+
+        if (event.id == BTN_3 &&
+            event.kind == BTN_EVT_DOWN) {
+            stop_count++;
+        }
+    }
+
+    assert(mode_count >= 1U);
+    assert(stop_count >= 1U);
+}
+
 int main(void)
 {
     test_short_press();
@@ -389,7 +498,9 @@ int main(void)
     test_clear_and_null_pop();
     test_full_critical_queue();
     test_repeated_presses();
-
-    puts("PASS: 13/13 Button unit tests");
+    test_delayed_dispatch();
+    test_tick_wraparound();
+    test_mode_priority_on_overflow();
+    puts("PASS: 16/16 Button unit tests");
     return 0;
 }
