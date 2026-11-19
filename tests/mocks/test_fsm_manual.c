@@ -23,6 +23,7 @@ static unsigned inbox_count;
 static unsigned inbox_read;
 
 static light_t r1, r2;
+static unsigned traffic_apply_calls;
 static bool fail_traffic;
 static bool fail_clearance;
 
@@ -63,6 +64,7 @@ traffic_result_t traffic_apply_pair(light_t a, light_t b)
         return TRAFFIC_HW_NOT_READY;
 
     assert(!(a == LIGHT_GREEN && b == LIGHT_GREEN));
+    traffic_apply_calls++;
     r1 = a;
     r2 = b;
     return TRAFFIC_OK;
@@ -133,6 +135,7 @@ static void tick(uint32_t count)
 
 static void setup(void)
 {
+    traffic_apply_calls = 0U;
     memset(timers, 0, sizeof(timers));
     inbox_count = 0;
     inbox_read = 0;
@@ -317,6 +320,75 @@ static void test_mode_and_events(void)
     stop();
     check(PHASE_P0, LIGHT_RED, LIGHT_GREEN);
 }
+/* TEST 10: RESTART during P2/P5 must restart clearance. */
+static void test_restart_during_clearance(void)
+{
+    for (unsigned scenario = 0U; scenario < 2U; scenario++) {
+        setup();
+        enter_p0();
+
+        next();  /* P0 -> P1 */
+        next();  /* P1 -> P2 */
+
+        if (scenario == 1U) {
+            tick(100);
+            next();  /* P2 -> P3 */
+            next();  /* P3 -> P4 */
+            next();  /* P4 -> P5 */
+        }
+
+        check(scenario == 0U ? PHASE_P2 : PHASE_P5,
+              LIGHT_RED, LIGHT_RED);
+
+        /* Part of the old clearance has elapsed. */
+        tick(40);
+
+        /* RESTART must begin a fresh clearance. */
+        restart();
+        check(PHASE_SAFE, LIGHT_RED, LIGHT_RED);
+
+        tick(99);
+        check(PHASE_SAFE, LIGHT_RED, LIGHT_RED);
+
+        tick(1);
+        check(PHASE_P0, LIGHT_RED, LIGHT_GREEN);
+    }
+}
+/* TEST 11: STOP must prevent GREEN at RESTART expiry. */
+static void test_stop_at_restart_expiry(void)
+{
+    setup();
+    enter_p0();
+
+    restart();
+    check(PHASE_SAFE, LIGHT_RED, LIGHT_RED);
+
+    tick(99U);
+    check(PHASE_SAFE, LIGHT_RED, LIGHT_RED);
+
+    /* STOP arrives before processing the 100th tick. */
+    push(BTN_3, BTN_EVT_DOWN);
+
+    unsigned before = traffic_apply_calls;
+
+    /* Simulate timer expiry without dispatching FSM yet. */
+    assert(timers[TMR_CLEARANCE].running);
+    assert(timers[TMR_CLEARANCE].remaining == 1U);
+
+    timers[TMR_CLEARANCE].remaining = 0U;
+    timers[TMR_CLEARANCE].running = false;
+    timers[TMR_CLEARANCE].expired = true;
+
+    run_actions();
+
+    /* STOP must win without any intermediate GREEN write. */
+    check(PHASE_SAFE, LIGHT_RED, LIGHT_RED);
+    assert(traffic_apply_calls == before);
+
+    tick(100U);
+    check(PHASE_SAFE, LIGHT_RED, LIGHT_RED);
+}
+
 
 int main(void)
 {
@@ -329,7 +401,9 @@ int main(void)
     test_driver_failure();
     test_timer_failure();
     test_mode_and_events();
+    test_restart_during_clearance();
+    test_stop_at_restart_expiry();
 
-    puts("PASS: 9/9 Manual FSM unit tests");
+    puts("PASS: 11/11 Manual FSM unit tests");
     return 0;
 }

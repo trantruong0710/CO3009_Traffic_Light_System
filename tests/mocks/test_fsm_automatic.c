@@ -289,7 +289,151 @@ static void test_zero_duration(void)
 
     check_state(PHASE_SAFE, LIGHT_RED, LIGHT_RED);
 }
+/* TEST 9: Invalid phase must enter a consistent SAFE state. */
+static void test_invalid_phase_fails_safe(void)
+{
+    reset_environment();
+    fsm_automatic_reset();
 
+    /* Enter P0 normally. */
+    advance_ticks(100U);
+    check_state(PHASE_P0, LIGHT_RED, LIGHT_GREEN);
+
+    /* Simulate a corrupted phase value. */
+    g_app_state.phase = (traffic_phase_t)99;
+
+    /* Expire the current phase timer. */
+    advance_ticks(1000U);
+
+    /* Both physical output and shared state must be SAFE. */
+    check_state(PHASE_SAFE, LIGHT_RED, LIGHT_RED);
+
+    /* FSM must remain stopped after detecting the error. */
+    advance_ticks(100U);
+    check_state(PHASE_SAFE, LIGHT_RED, LIGHT_RED);
+}
+/* TEST 10: Reset from every phase must restart safe clearance. */
+static void test_reset_from_every_phase(void)
+{
+    static const struct {
+        uint32_t offset;
+        traffic_phase_t phase;
+        light_t r1;
+        light_t r2;
+    } cases[] = {
+        {   0U, PHASE_P0, LIGHT_RED,   LIGHT_GREEN },
+        {1000U, PHASE_P1, LIGHT_RED,   LIGHT_AMBER },
+        {1300U, PHASE_P2, LIGHT_RED,   LIGHT_RED   },
+        {1400U, PHASE_P3, LIGHT_GREEN, LIGHT_RED   },
+        {2400U, PHASE_P4, LIGHT_AMBER, LIGHT_RED   },
+        {2700U, PHASE_P5, LIGHT_RED,   LIGHT_RED   }
+    };
+
+    for (unsigned i = 0U;
+         i < sizeof(cases) / sizeof(cases[0]);
+         i++) {
+
+        reset_environment();
+        fsm_automatic_reset();
+
+        /* Complete startup clearance and reach target phase. */
+        advance_ticks(100U);
+        advance_ticks(cases[i].offset);
+
+        check_state(cases[i].phase,
+                    cases[i].r1,
+                    cases[i].r2);
+
+        /* Reset must cancel the old phase timer. */
+        fsm_automatic_reset();
+
+        check_state(PHASE_SAFE, LIGHT_RED, LIGHT_RED);
+
+        assert(!timers[TMR_PHASE].running);
+        assert(timers[TMR_CLEARANCE].running);
+        assert(timers[TMR_CLEARANCE].remaining == 100U);
+
+        /* No premature GREEN at tick 99. */
+        advance_ticks(99U);
+        check_state(PHASE_SAFE, LIGHT_RED, LIGHT_RED);
+
+        /* GREEN is permitted at tick 100. */
+        advance_ticks(1U);
+        check_state(PHASE_P0, LIGHT_RED, LIGHT_GREEN);
+    }
+}
+/* TEST 11: FSM must use the active configuration durations. */
+static void test_custom_phase_durations(void)
+{
+    reset_environment();
+
+    g_app_state.active_config.green_s[ROAD_1] = 5U;
+    g_app_state.active_config.amber_s[ROAD_1] = 2U;
+    g_app_state.active_config.green_s[ROAD_2] = 7U;
+    g_app_state.active_config.amber_s[ROAD_2] = 4U;
+
+    fsm_automatic_reset();
+
+    advance_ticks(100U);
+    check_state(PHASE_P0, LIGHT_RED, LIGHT_GREEN);
+
+    check_transition(
+        700U, PHASE_P0, LIGHT_RED, LIGHT_GREEN,
+        PHASE_P1, LIGHT_RED, LIGHT_AMBER);
+
+    check_transition(
+        400U, PHASE_P1, LIGHT_RED, LIGHT_AMBER,
+        PHASE_P2, LIGHT_RED, LIGHT_RED);
+
+    check_transition(
+        100U, PHASE_P2, LIGHT_RED, LIGHT_RED,
+        PHASE_P3, LIGHT_GREEN, LIGHT_RED);
+
+    check_transition(
+        500U, PHASE_P3, LIGHT_GREEN, LIGHT_RED,
+        PHASE_P4, LIGHT_AMBER, LIGHT_RED);
+
+    check_transition(
+        200U, PHASE_P4, LIGHT_AMBER, LIGHT_RED,
+        PHASE_P5, LIGHT_RED, LIGHT_RED);
+
+    check_transition(
+        100U, PHASE_P5, LIGHT_RED, LIGHT_RED,
+        PHASE_P0, LIGHT_RED, LIGHT_GREEN);
+}
+/* TEST 12: Expiry latch must trigger only one phase transition. */
+static void test_expiry_consumed_once(void)
+{
+    reset_environment();
+    fsm_automatic_reset();
+
+    advance_ticks(100U);
+    check_state(PHASE_P0, LIGHT_RED, LIGHT_GREEN);
+
+    /* Repeated dispatch without advancing time. */
+    for (unsigned i = 0U; i < 10U; i++) {
+        fsm_automatic_run();
+    }
+
+    check_state(PHASE_P0, LIGHT_RED, LIGHT_GREEN);
+
+    /* Reach the exact phase deadline. */
+    advance_ticks(1000U);
+    check_state(PHASE_P1, LIGHT_RED, LIGHT_AMBER);
+
+    /* Old expiry must not trigger another transition. */
+    for (unsigned i = 0U; i < 10U; i++) {
+        fsm_automatic_run();
+    }
+
+    check_state(PHASE_P1, LIGHT_RED, LIGHT_AMBER);
+
+    advance_ticks(299U);
+    check_state(PHASE_P1, LIGHT_RED, LIGHT_AMBER);
+
+    advance_ticks(1U);
+    check_state(PHASE_P2, LIGHT_RED, LIGHT_RED);
+}
 int main(void)
 {
     test_initial_clearance();
@@ -300,7 +444,11 @@ int main(void)
     test_phase_timer_failure();
     test_clearance_timer_failure();
     test_zero_duration();
+    test_invalid_phase_fails_safe();
+    test_reset_from_every_phase();
+    test_custom_phase_durations();
+    test_expiry_consumed_once();
 
-    puts("PASS: 8/8 Automatic FSM unit tests");
+    puts("PASS: 12/12 Automatic FSM unit tests");
     return 0;
 }

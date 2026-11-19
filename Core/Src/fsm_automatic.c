@@ -42,9 +42,10 @@ static void enter_phase(traffic_phase_t phase)
         ticks = CLEARANCE_S * TICKS_PER_SECOND;
         break;
     default:
-        stopped = true;
-        traffic_force_all_red();
-        return;
+    stopped = true;
+    traffic_force_all_red();
+    g_app_state.phase = PHASE_SAFE;
+    return;
     }
 
     if (ticks == 0U ||

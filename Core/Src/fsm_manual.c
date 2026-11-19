@@ -108,7 +108,7 @@ void fsm_manual_run(void)
         return;
     }
 
-    if (waiting_clearance &&
+    /*if (waiting_clearance &&
         swtimer_expired(TMR_CLEARANCE)) {
 
         waiting_clearance = false;
@@ -121,12 +121,13 @@ void fsm_manual_run(void)
                 return;
             }
         }
-    }
+    } */
 
     /*
      * Collect events first so STOP always takes
      * precedence over RESTART and NEXT.
      */
+    bool clearance_was_pending = waiting_clearance;
     bool stop_requested = false;
     bool restart_requested = false;
     bool next_requested = false;
@@ -158,10 +159,24 @@ void fsm_manual_run(void)
         start_safe_clearance(true);
         return;
     }
+    /* Process timer expiry only after STOP/RESTART priority. */
+if (waiting_clearance &&
+    swtimer_expired(TMR_CLEARANCE)) {
 
-    if (!next_requested || waiting_clearance) {
+    waiting_clearance = false;
+
+    if (restart_pending) {
+        restart_pending = false;
+        enter_phase(PHASE_P0);
         return;
     }
+}
+
+    if (!next_requested ||
+    waiting_clearance ||
+    clearance_was_pending) {
+    return;
+}
 
     traffic_phase_t next;
 
