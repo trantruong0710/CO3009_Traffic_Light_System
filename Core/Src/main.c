@@ -26,6 +26,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include "board_config.h"
+#include "board_diagnostics.h"
 #include "global.h"
 #include "config.h"
 #include "scheduler.h"
@@ -82,6 +84,7 @@ static void MX_TIM2_Init(void);
 
 /* USER CODE BEGIN 0 */
 
+#if !APP_DIAGNOSTIC_MODE
 typedef struct {
     void (*callback)(void);
     uint32_t delay;
@@ -118,6 +121,9 @@ static bool register_core_tasks(void)
 
     return true;
 }
+
+
+#endif
 
 static void app_startup_fail_safe(void)
 {
@@ -169,6 +175,12 @@ int main(void)
   config_init_defaults();
 
   SCH_Init();
+#if APP_DIAGNOSTIC_MODE
+  board_diagnostics_init();
+  if (SCH_Add_Task(board_diagnostics_service, 1, 1) == SCH_INVALID_TASK_ID) {
+    app_startup_fail_safe();
+  }
+#else
   swtimer_init();
   button_init();
 
@@ -184,6 +196,8 @@ int main(void)
   if (!register_core_tasks()) {
     app_startup_fail_safe();
   }
+
+#endif
 
   if (HAL_TIM_Base_Start_IT(&htim2) != HAL_OK) {
     app_startup_fail_safe();
@@ -370,7 +384,10 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, TL2_B_Pin|TL1_A_Pin|TL2_A_Pin|TL1_B_Pin, GPIO_PIN_RESET);
+#if !APP_DIAGNOSTIC_MODE
+  /* Preload verified RED codes before enabling output drivers. */
+  traffic_force_all_red();
+#endif
 
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
@@ -387,7 +404,11 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pins : TL2_B_Pin TL1_A_Pin TL2_A_Pin TL1_B_Pin */
   GPIO_InitStruct.Pin = TL2_B_Pin|TL1_A_Pin|TL2_A_Pin|TL1_B_Pin;
+#if APP_DIAGNOSTIC_MODE
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+#else
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+#endif
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);

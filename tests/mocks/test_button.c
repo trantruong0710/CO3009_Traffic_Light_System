@@ -4,6 +4,8 @@
 
 #include "main.h"
 #include "button.h"
+#include "global.h"
+app_shared_state_t g_app_state;
 static uint32_t mock_tick = 0U;
 
 GPIO_TypeDef mock_gpioa = {0};
@@ -482,8 +484,24 @@ static void test_mode_priority_on_overflow(void)
     assert(stop_count >= 1U);
 }
 
+static void test_tuning_repeat(void)
+{
+    reset_test();
+    g_app_state.mode = MODE_TUNING;
+    levels[2] = GPIO_PIN_RESET;
+    scan(3); expect_event(BTN_3, BTN_EVT_DOWN);
+    scan(99); expect_empty();
+    scan(1); expect_event(BTN_3, BTN_EVT_LONG); expect_event(BTN_3, BTN_EVT_REPEAT);
+    scan(19); expect_empty();
+    scan(1); expect_event(BTN_3, BTN_EVT_REPEAT);
+    levels[2] = GPIO_PIN_SET;
+    scan(25); expect_empty();
+    g_app_state.mode = MODE_AUTO;
+}
+
 int main(void)
 {
+    test_tuning_repeat();
     test_short_press();
     test_long_press();
     test_block_held_button();
@@ -501,6 +519,6 @@ int main(void)
     test_delayed_dispatch();
     test_tick_wraparound();
     test_mode_priority_on_overflow();
-    puts("PASS: 16/16 Button unit tests");
+    puts("PASS: 17/17 Button unit tests (including tuning hold repeat)");
     return 0;
 }

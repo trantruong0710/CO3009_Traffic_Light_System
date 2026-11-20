@@ -1,3 +1,4 @@
+#include "board_config.h"
 
 #include "button.h"
 #include "main.h"
@@ -10,6 +11,7 @@
 #define BTN_COUNT          4U
 #define DEBOUNCE_SAMPLES   3U
 #define LONG_PRESS_TICKS   100U
+#define REPEAT_INTERVAL_TICKS 20U /* 200 ms after the initial 1 s hold. */
 #define EVENT_CAPACITY     8U
 /* Provisional fault bit; TV1 must confirm before merge. */
 #define TV2_FAULT_BUTTON_QUEUE_FULL (1UL << 1)
@@ -30,6 +32,7 @@ typedef struct {
     bool blocked;
     uint8_t consecutive;
     uint32_t press_tick;
+    uint32_t repeat_tick;
 } button_state_t;
 
 static button_state_t states[BTN_COUNT];
@@ -43,10 +46,10 @@ static const uint16_t pins[BTN_COUNT] = {
     BTN_1_Pin, BTN_2_Pin, BTN_3_Pin, BTN_4_Pin
 };
 
-/* PLACEHOLDERS ONLY: verify V-03 before enabling. */
+/* Measured levels are configured centrally in board_config.h. */
 static const GPIO_PinState active_levels[BTN_COUNT] = {
-    GPIO_PIN_RESET, GPIO_PIN_RESET,
-    GPIO_PIN_RESET, GPIO_PIN_RESET
+    BTN1_ACTIVE_LEVEL, BTN2_ACTIVE_LEVEL,
+    BTN3_ACTIVE_LEVEL, BTN4_ACTIVE_LEVEL
 };
 
 static button_event_t events[EVENT_CAPACITY];
@@ -175,6 +178,7 @@ void button_scan_10ms(void)
 
             if (raw) {
                 b->press_tick = now;
+                b->repeat_tick = now;
                 b->long_sent = false;
 
                 push_event((button_id_t)i, BTN_EVT_DOWN);
@@ -197,6 +201,15 @@ void button_scan_10ms(void)
 
             push_event((button_id_t)i, BTN_EVT_LONG);
             b->long_sent = true;
+            b->repeat_tick = now;
+            if (g_app_state.mode == MODE_TUNING && (i == BTN_3 || i == BTN_4)) {
+                push_event((button_id_t)i, BTN_EVT_REPEAT);
+            }
+        } else if (b->stable_pressed && raw && b->long_sent &&
+                   g_app_state.mode == MODE_TUNING && (i == BTN_3 || i == BTN_4) &&
+                   (uint32_t)(now - b->repeat_tick) >= REPEAT_INTERVAL_TICKS) {
+            b->repeat_tick = now;
+            push_event((button_id_t)i, BTN_EVT_REPEAT);
         }
     }
 }

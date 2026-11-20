@@ -38,10 +38,19 @@ void i2c_scanner_service(void){
 		g_i2c_scan.detected[address] = 1U;
 		g_i2c_scan.device_count = (uint8_t)(g_i2c_scan.device_count + 1U);
 
-	}else if(status != HAL_ERROR || HAL_I2C_GetError(scan_bus) != HAL_I2C_ERROR_AF){		//AF là acknowledge failure : địa chỉ không có thiết bị trả lời
-		g_i2c_scan.bus_error_count++;														//Bộ đếm này tăng khi quá trình giao tiếp I2C gặp trục trặc
+    } else {
+        uint32_t error = HAL_I2C_GetError(scan_bus);
+        /* STM32F1 HAL IsDeviceReady clears AF and can return HAL_ERROR
+         * with ErrorCode=NONE for an ordinary address NACK. Other HAL
+         * revisions report AF instead. Neither is a bus fault here.
+         * This API does not distinguish every low-level timeout case.
+         */
+        if (status != HAL_ERROR ||
+            (error != HAL_I2C_ERROR_NONE && error != HAL_I2C_ERROR_AF)) {
+            g_i2c_scan.bus_error_count++;
+        }
+    }
 
-	}
 
 	if(address >= I2C_SCAN_ADDR_MAX){							//Toàn scan cần 0x77−0x08+1=112 lần service
 		g_i2c_scan.complete = true;

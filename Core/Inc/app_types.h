@@ -12,7 +12,7 @@ typedef enum {
     PHASE_P3, PHASE_P4, PHASE_P5, PHASE_SAFE
 } traffic_phase_t;
 typedef enum { BTN_1 = 0, BTN_2, BTN_3, BTN_4 } button_id_t;
-typedef enum { BTN_EVT_DOWN = 0, BTN_EVT_SHORT, BTN_EVT_LONG } button_kind_t;
+typedef enum { BTN_EVT_DOWN = 0, BTN_EVT_SHORT, BTN_EVT_LONG, BTN_EVT_REPEAT } button_kind_t;
 
 typedef struct {
     button_id_t id;

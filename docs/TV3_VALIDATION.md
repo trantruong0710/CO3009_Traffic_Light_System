@@ -1,5 +1,7 @@
 # TV3 implementation and validation
 
+> Historical review of 18 November. The runtime is now integrated and Amber coupling has been corrected. Current board commissioning instructions are in [BOARD_BRINGUP.md](BOARD_BRINGUP.md); the pre-integration limitations below describe that older revision, not the current source.
+
 Reviewed 18 November 2026 against the existing v1.2 public headers and the supplied group specification. Scope: TV3 source and tests only. Main, shared headers, config, scheduler, GPIO/traffic FSMs and peripheral configuration are not changed by this branch.
 
 ## Delivered

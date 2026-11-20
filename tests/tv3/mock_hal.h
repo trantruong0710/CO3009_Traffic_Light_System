@@ -4,6 +4,7 @@
 #include <stdint.h>
 typedef struct { int unused; } I2C_HandleTypeDef;
 typedef enum { HAL_OK, HAL_ERROR, HAL_BUSY, HAL_TIMEOUT } HAL_StatusTypeDef;
+#define HAL_I2C_ERROR_NONE 0U
 #define HAL_I2C_ERROR_AF 4U
 #define HAL_I2C_ERROR_BERR 1U
 uint32_t HAL_GetTick(void);

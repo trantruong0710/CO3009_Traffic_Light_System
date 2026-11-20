@@ -1,43 +1,37 @@
 # CO3009 Traffic Light System
 
-Two-road traffic light course project for XNUCLEO-F103RB / STM32F103RB.
+Two-road controller for XNUCLEO-F103RB / STM32F103RB with Auto, Manual and Tuning, O(1) scheduler ISR, software timers, buttons, traffic interlocks, LCD and DHT20. The full runtime is integrated; hardware commissioning is still required.
 
-## Development status
+## First board flash
 
-GPIO, I2C1 and TIM2 are configured. The project contains 13 public headers
-following the team's v1.2 design and a shared-state implementation in global.c.
-The scheduler, drivers and traffic FSMs are not implemented yet. TIM2 is
-configured for a nominal 10 ms period but is not started. Hardware verification
-is pending.
+The default profile is DIAGNOSTIC (`APP_DIAGNOSTIC_MODE=1` in `Core/Inc/board_config.h`). It runs a debugger-controlled bring-up task, samples raw buttons, scans I2C and services LCD/DHT20. Traffic pins boot as inputs and are driven only on an explicit debugger command. It intentionally does not run the Auto traffic cycle.
 
-## Build
+Follow [BOARD_BRINGUP.md](docs/BOARD_BRINGUP.md), including the measurement tables. Capture the actual four button levels, both traffic color truth tables and LCD address/mapping. Then enter them in board_config.h, set both verification flags, change APP_DIAGNOSTIC_MODE to 0 and rebuild. Configured runtime is rejected at compile time if verification or color codes are missing. Never flash the synthetic TestRuntime build.
 
-1. Open STM32CubeIDE and select File > Import > General > Existing Projects into Workspace.
-2. Select this repository directory; leave "Copy projects into workspace" unchecked.
-3. Import CO3009_Firmware. Refresh (F5) after changing Git branches.
-4. Select Project > Clean, then Build Project for CO3009_Firmware.
+## Build and flash in STM32CubeIDE
 
-Development environment: STM32CubeIDE 1.7.0, GNU Tools for STM32
-9-2020-q2-update. The .ioc records STM32Cube FW_F1 V1.8.7.
+1. Import this directory as an existing project; leave Copy projects unchecked.
+2. Refresh the project (F5), save files, Clean and Build. Source is under Core; host tests under tests are not firmware sources.
+3. Connect the correct SWD programmer and power for the actual board. Select the project ELF from its Debug directory in Debug Configurations; use ST-LINK and SWD.
+4. Debug to program, then Resume (F8) after stopping at main. Diagnostic expressions are g_board_diag and g_i2c_scan.
 
-## Flash
+The project targets STM32F103xB, uses a 64 MHz system/timer clock and TIM2 PSC=6399, ARR=99 for a nominal 10 ms tick. I2C1 is PB8/PB9 with AFIO remap. Measure timing and check wiring on hardware.
 
-1. Connect and power the board with the appropriate SWD programmer.
-2. Select CO3009_Firmware and configure an STM32 Cortex-M C/C++ Run/Debug
-   configuration using Debug/CO3009_Firmware.elf and the connected programmer.
-3. Build, program and run the firmware.
+## Host and ARM checks
 
-The current firmware initializes peripherals only. Confirm the actual GPIO
-mapping, traffic-light color codes, button levels, I2C devices and timer period
-on the board before completing hardware verification.
+```powershell
+./tests/tv2/run.ps1
+./tests/tv3/run.ps1
+./tests/bringup/run.ps1
+./tests/tv3/build_arm.ps1 -Compiler 'FULL/PATH/TO/arm-none-eabi-gcc.exe' -Profile Diagnostic
+# Only after board_config.h contains verified measurements:
+./tests/tv3/build_arm.ps1 -Compiler 'FULL/PATH/TO/arm-none-eabi-gcc.exe' -Profile ConfiguredRuntime
+```
 
-## Source structure and ownership
+Hardware PASS requires actual board testing. Legacy docs/TV3_VALIDATION.md records an older pre-integration review: its missing-runtime and Amber-coupling observations were fixed on current main. Use BOARD_BRINGUP.md for current commissioning instructions. Generated syscalls may warn about unused parameters; the supplied linker script may produce an RWX segment warning under new GCC versions; no warning is evidence of board verification.
 
-| Owner | Files / modules |
-| --- | --- |
-| TV1 | app_types, global, config, scheduler, software_timer, mode_manager, main.c and .ioc |
-| TV2 | button, traffic_light, fsm_automatic, fsm_manual |
-| TV3 | lcd, dht20, fsm_tuning |
+Runtime button mapping: BTN1 SHORT changes mode; Manual BTN2 SHORT NEXT, BTN3 DOWN STOP, BTN4 DOWN RESTART; Tuning BTN2 SHORT selects, BTN3/4 DOWN adjust, BTN2 LONG saves, BTN1 exits and cancels unsaved edits. Button held auto-repeat is not implemented by the specification. Green 5..60 s, Amber 2..5 s; Red is derived and edited through the opposite Green; Amber edits preserve the opposite Red.
 
-Application headers are in Core/Inc; source files are in Core/Src.
-Each member uses their own GitHub account and submits changes through a PR.
+## Ownership
+
+TV1: core runtime/config/mode integration. TV2: button/traffic/Auto/Manual. TV3: LCD/DHT20/scanner/Tuning. Board configuration and bring-up are shared integration work. Preserve public APIs and review measured hardware changes with the team. There is no automatic push or merge performed by the local build scripts.

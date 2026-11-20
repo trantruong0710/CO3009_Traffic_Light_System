@@ -1,3 +1,4 @@
+#include "board_config.h"
 
 #include "traffic_light.h"
 #include "main.h"
@@ -64,7 +65,7 @@ static void write_pair(light_t r1, light_t r2)
 
 static bool valid_light(light_t light)
 {
-    return light >= LIGHT_RED && light <= LIGHT_OFF;
+    return (unsigned)light <= (unsigned)LIGHT_OFF;
 }
 
 void traffic_init(void)

@@ -24,7 +24,7 @@ void fsm_tuning_run(void)
         if (event.id == BTN_2 && event.kind == BTN_EVT_SHORT) {
             field = (tuning_field_t)(((int)field + 1) % 6);
             lcd_set_notice("");
-        } else if ((event.id == BTN_3 || event.id == BTN_4) && event.kind == BTN_EVT_DOWN) {
+        } else if ((event.id == BTN_3 || event.id == BTN_4) && (event.kind == BTN_EVT_DOWN || event.kind == BTN_EVT_REPEAT)) {
             if (event.id == BTN_3) delta = 1;
             else delta = -1;
             ok = config_adjust_staged(field, delta);

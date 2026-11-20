@@ -1,5 +1,8 @@
+#include "board_config.h"
 #include "lcd.h"
 #include "config.h"
+#include "global.h"
+#include "software_timer.h"
 #include "dht20.h"
 #include "i2c_scanner.h"
 #include <stdio.h>
@@ -58,8 +61,7 @@ static void make_line(char *out)
     char row1[32];
     char row2[32];
     const char *names[] = {"R1", "G1", "A1", "R2", "G2", "A2"};
-    const char *lights[] = {"R/G", "R/A", "R/R", "G/R", "A/R", "R/R", "R/R"};
-    const char *mode_name;
+
     dht20_data_t sensor;
     size_t length;
 
@@ -81,12 +83,34 @@ static void make_line(char *out)
             snprintf(row1, sizeof row1, "TUNE %s=%03ds%s", names[field], value, mark);
         }
     } else {
-        if (mode == MODE_AUTO) mode_name = "AUTO";
-        else mode_name = "MAN";
-        if (phase == PHASE_SAFE) {
-            snprintf(row1, sizeof row1, "%s SAFE R/R", mode_name);
+        static const char color1[] = "RRRGARR";
+        static const char color2[] = "GARRRRR";
+        if (mode == MODE_AUTO && phase != PHASE_SAFE) {
+            const traffic_config_t *cfg = &g_app_state.active_config;
+            unsigned remaining = (swtimer_remaining(TMR_PHASE) + 99) / 100;
+            unsigned seconds1 = remaining;
+            unsigned seconds2 = remaining;
+            /* A red countdown includes the following phases until this road turns green. */
+            switch (phase) {
+            case PHASE_P0: seconds1 += cfg->amber_s[ROAD_2] + CLEARANCE_S; break;
+            case PHASE_P1: seconds1 += CLEARANCE_S; break;
+            case PHASE_P2:
+                seconds2 += cfg->green_s[ROAD_1] + cfg->amber_s[ROAD_1] + CLEARANCE_S;
+                break;
+            case PHASE_P3: seconds2 += cfg->amber_s[ROAD_1] + CLEARANCE_S; break;
+            case PHASE_P4: seconds2 += CLEARANCE_S; break;
+            case PHASE_P5:
+                seconds1 += cfg->green_s[ROAD_2] + cfg->amber_s[ROAD_2] + CLEARANCE_S;
+                break;
+            default: break;
+            }
+            snprintf(row1, sizeof row1, "1 %c:%02us 2 %c:%02us",
+                     color1[phase], seconds1, color2[phase], seconds2);
+        } else if (mode == MODE_MANUAL) {
+            /* Manual signals wait for NEXT, so there is no automatic seconds countdown. */
+            snprintf(row1, sizeof row1, "MAN 1:%c 2:%c", color1[phase], color2[phase]);
         } else {
-            snprintf(row1, sizeof row1, "%s P%d %s", mode_name, (int)phase, lights[phase]);
+            snprintf(row1, sizeof row1, "AUTO SAFE R/R");
         }
     }
 

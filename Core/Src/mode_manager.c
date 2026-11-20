@@ -57,7 +57,7 @@ static bool is_action_for_mode(app_mode_t mode, button_event_t event)
         return (event.id == BTN_2 &&
                 (event.kind == BTN_EVT_SHORT || event.kind == BTN_EVT_LONG)) ||
                ((event.id == BTN_3 || event.id == BTN_4) &&
-                event.kind == BTN_EVT_DOWN);
+                (event.kind == BTN_EVT_DOWN || event.kind == BTN_EVT_REPEAT));
     case MODE_AUTO:
     default:
         return false;

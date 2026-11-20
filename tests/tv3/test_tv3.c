@@ -1,16 +1,22 @@
 /* Host tests. GPIO, scheduler and TV1 config/router are deliberately not implemented here. */
 #include "mock_hal.h"
+#include "board_config.h"
 #include "dht20.h"
 #include "lcd.h"
 #include "i2c_scanner.h"
 #include "fsm_tuning.h"
 #include "config.h"
+#include "global.h"
+#include "software_timer.h"
 #include "mode_manager.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
 
 I2C_HandleTypeDef hi2c1;
+app_shared_state_t g_app_state = {.active_config = {{10, 10}, {3, 3}}};
+static uint32_t remaining_ticks = 901;
+uint32_t swtimer_remaining(soft_timer_id_t id) { assert(id == TMR_PHASE); return remaining_ticks; }
 static uint32_t now_ms;
 static unsigned calls, trigger_count, probe_count;
 static uint32_t mock_error = HAL_I2C_ERROR_AF;
@@ -37,7 +43,7 @@ HAL_StatusTypeDef HAL_I2C_IsDeviceReady(I2C_HandleTypeDef *bus, uint16_t address
     assert(address >= (0x08 << 1) && address <= (0x77 << 1));
     probe_count++;
     if (probe_result != HAL_OK) return probe_result;
-    if (address == (0x27 << 1) || address == (0x38 << 1)) return HAL_OK;
+    if (address == (TV3_LCD_ADDRESS << 1) || address == (0x38 << 1)) return HAL_OK;
     return HAL_ERROR;
 }
 HAL_StatusTypeDef HAL_I2C_Master_Receive(I2C_HandleTypeDef *bus, uint16_t address, uint8_t *out, uint16_t length, uint32_t timeout)
@@ -58,7 +64,7 @@ HAL_StatusTypeDef HAL_I2C_Master_Transmit(I2C_HandleTypeDef *bus, uint16_t addre
         trigger_count++;
         return sensor_result;
     }
-    assert(address == (0x27 << 1));
+    assert(address == (TV3_LCD_ADDRESS << 1));
     lcd_calls++;
     if (lcd_fail_at >= 0 && (int)lcd_calls >= lcd_fail_at) return HAL_ERROR;
     /* Decode actual PCF8574 pin sequences, rather than reading internal LCD buffers. */
@@ -220,9 +226,15 @@ static void test_scan(void)
     now_ms += 200; lcd_service(); dht20_service(); assert(calls == before);
     for (unsigned i = 0; i < 112; i++) i2c_scanner_service();
     assert(probe_count == 112 && g_i2c_scan.complete && g_i2c_scan.device_count == 2);
-    assert(g_i2c_scan.detected[0x27] && g_i2c_scan.detected[0x38] && !g_i2c_scan.detected[0x26]);
+    assert(g_i2c_scan.detected[TV3_LCD_ADDRESS] && g_i2c_scan.detected[0x38] && !g_i2c_scan.detected[0x26]);
     assert(g_i2c_scan.bus_error_count == 0);
     i2c_scanner_service(); assert(probe_count == 112);
+    /* Actual STM32F1 IsDeviceReady NACK behavior: HAL_ERROR + NONE. */
+    i2c_scanner_init(&hi2c1);
+    mock_error = HAL_I2C_ERROR_NONE;
+    for (unsigned i = 0; i < 112; i++) i2c_scanner_service();
+    assert(g_i2c_scan.complete && g_i2c_scan.device_count == 2);
+    assert(g_i2c_scan.bus_error_count == 0);
     for (int err = HAL_ERROR; err <= HAL_TIMEOUT; err++) {
         i2c_scanner_init(&hi2c1); probe_result = (HAL_StatusTypeDef)err;
         mock_error = HAL_I2C_ERROR_AF | HAL_I2C_ERROR_BERR;
@@ -239,13 +251,25 @@ static void test_lcd(void)
     now_ms += 49; lcd_service(); assert(calls == before);
     paint(20);
     expect_row(0, "AUTO SAFE R/R"); expect_row(1, "T:25.0C H:50%");
+    const char *expected[] = {
+        "1 R:14s 2 G:10s", "1 R:11s 2 A:10s", "1 R:10s 2 R:24s",
+        "1 G:10s 2 R:14s", "1 A:10s 2 R:11s", "1 R:24s 2 R:10s"
+    };
+    for (int p = PHASE_P0; p <= PHASE_P5; p++) {
+        lcd_set_view(MODE_AUTO, (traffic_phase_t)p, FIELD_R1, false);
+        paint(8); expect_row(0, expected[p]);
+    }
+    remaining_ticks = 100;
+    lcd_set_view(MODE_AUTO, PHASE_P0, FIELD_R1, false); paint(8);
+    expect_row(0, "1 R:05s 2 G:01s");
+    remaining_ticks = 901;
     for (int mode = MODE_AUTO; mode <= MODE_MANUAL; mode++) {
         for (int phase = PHASE_P0; phase <= PHASE_SAFE; phase++) {
             lcd_set_view((app_mode_t)mode, (traffic_phase_t)phase, FIELD_R1, false); paint(8);
-            if (mode == MODE_MANUAL && phase == PHASE_P3) expect_row(0, "MAN P3 G/R");
+            if (mode == MODE_MANUAL && phase == PHASE_P3) expect_row(0, "MAN 1:G 2:R");
         }
     }
-    lcd_set_view((app_mode_t)-1, PHASE_P0, FIELD_R1, false); paint(2); expect_row(0, "MAN SAFE R/R");
+    lcd_set_view((app_mode_t)-1, PHASE_P0, FIELD_R1, false); paint(2); expect_row(0, "MAN 1:R 2:R");
     for (int f = FIELD_R1; f <= FIELD_A2; f++) {
         lcd_set_view(MODE_TUNING, PHASE_SAFE, (tuning_field_t)f, true); paint(8);
         if (f == FIELD_R1) expect_row(0, "T R1:015 G2:010*");
@@ -265,7 +289,7 @@ static void test_lcd(void)
     /* Fail an update between address/data, then verify complete redraw after recovery. */
     lcd_set_view(MODE_MANUAL, PHASE_P3, FIELD_R1, false);
     lcd_fail_at = (int)lcd_calls + 3; paint(1);
-    init_nibbles = half_byte = 0; lcd_fail_at = -1; paint(20); expect_row(0, "MAN P3 G/R");
+    init_nibbles = half_byte = 0; lcd_fail_at = -1; paint(20); expect_row(0, "MAN 1:G 2:R");
     puts("TV3-01/05 PASS: actual pin/nibble decode, modes/phases/fields, T/H, notice copy/truncate/expiry, I2C failure/re-init, <=4 cells per call");
 }
 static void test_tuning(void)
@@ -301,6 +325,10 @@ static void test_tuning(void)
     fsm_tuning_run(); assert(queued == 1 && staged.green_s[1] == 11);
     current_mode = MODE_AUTO; fsm_tuning_run(); assert(queued == 1);
     queued = 0; current_mode = MODE_TUNING;
+    fsm_tuning_reset();
+    int before_repeat = staged.green_s[1];
+    action(BTN_3, BTN_EVT_REPEAT); assert(staged.green_s[1] == before_repeat + 1);
+    action(BTN_4, BTN_EVT_REPEAT); assert(staged.green_s[1] == before_repeat);
     puts("TV3-04 PASS: six fields, DOWN once, ignored SHORT/LONG, save/reject/cancel contract, config coupling, bounds, one event/call, mode isolation");
 }
 int main(void)
